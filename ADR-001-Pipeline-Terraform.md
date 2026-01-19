@@ -23,13 +23,12 @@ O objetivo é construir um pipeline de dados na AWS para atender aos requisitos 
 
 ## Fluxo da Arquitetura Proposta
 
-1.  **Agendamento (Diário):** O Amazon EventBridge Scheduler aciona uma função Lambda de extração (**Requisito 1**).
-2.  **Extração (Lambda):** A função Lambda (`extractor_lambda`) busca os dados de ações usando a biblioteca `yfinance`.
-3.  **Armazenamento (S3 Raw):** A Lambda salva os dados brutos em formato Parquet no bucket S3, no prefixo `raw/` com partição diária (**Requisito 2**).
-4.  **Gatilho (S3/Lambda):** O novo objeto no S3 aciona uma segunda função Lambda (`glue_starter`) (**Requisito 3**).
-5.  **Início do ETL (Lambda):** A função `glue_starter` inicia o job de ETL no AWS Glue (**Requisito 4**).
-6.  **Transformação (Glue):** O job do Glue processa os dados, aplica as transformações (**Requisito 5**) e os salva no prefixo `refined/` com as partições corretas (**Requisito 6**).
-7.  **Catálogo e Consulta (Glue/Athena):** O job do Glue atualiza o catálogo de dados (**Requisito 7**), tornando os dados refinados consultáveis via Amazon Athena (**Requisito 8**).
+1.  **Agendamento (Diário):** O Amazon EventBridge Scheduler aciona o primeiro job do AWS Glue, responsável pela extração (**Requisito 1**).
+2.  **Extração (Glue Job 1):** O job de extração busca os dados de ações (ex: `yfinance`) e os salva em formato Parquet no prefixo `raw/` de um bucket S3, com partição diária (**Requisito 2**).
+3.  **Gatilho (S3/Lambda):** A criação de um novo objeto no bucket S3 aciona uma função Lambda (`glue_starter_lambda`) (**Requisito 3**).
+4.  **Início do ETL (Lambda):** A função Lambda `glue_starter_lambda` inicia o segundo job do AWS Glue, responsável pela transformação (**Requisito 4**).
+5.  **Transformação (Glue Job 2):** O job de transformação processa os dados do prefixo `raw/`, aplica as transformações (**Requisito 5**) e salva o resultado no prefixo `refined/` com as partições corretas (**Requisito 6**).
+6.  **Catálogo e Consulta (Glue/Athena):** O job de transformação atualiza o catálogo de dados (**Requisito 7**), tornando os dados refinados consultáveis via Amazon Athena (**Requisito 8**).
 
 ## Decisão
 
@@ -40,26 +39,26 @@ Adotaremos o Terraform para provisionar toda a infraestrutura na AWS. A estrutur
     *   Isso resolve a desvantagem do gerenciamento de estado local.
 
 2.  **EventBridge:**
-    *   Um `aws_scheduler_schedule` será criado para acionar a função Lambda de extração diariamente, cumprindo o **Requisito 1**.
+    *   Um `aws_scheduler_schedule` será criado para acionar o job do Glue de extração diariamente, cumprindo o **Requisito 1**.
 
 3.  **S3 (Simple Storage Service):**
     *   Um único bucket S3 (`aws_s3_bucket`) será criado para armazenar os dados e os scripts da aplicação.
     *   O bucket terá os prefixos: `raw/` (**Requisito 2**), `refined/` (**Requisito 6**) e `scripts/`.
 
-4.  **Funções Lambda:**
-    *   **Lambda de Extração:** Uma função (`aws_lambda_function`) contendo o código de `src/extractor_lambda_function.py`.
-    *   **Lambda de Início do Glue:** Uma segunda função (`aws_lambda_function`) com o código de `src/glue_starter_lambda_function.py`, acionada por eventos S3 para iniciar o job do Glue, atendendo ao **Requisito 3** e **Requisito 4**.
-    *   As funções terão IAM Roles (`aws_iam_role`) com permissões específicas.
+4.  **Função Lambda:**
+    *   **Lambda de Início do Glue:** Uma função (`aws_lambda_function`) com o código de `src/glue_starter_lambda_function.py`, acionada por eventos S3 para iniciar o job de transformação do Glue, atendendo aos **Requisitos 3 e 4**.
+    *   A função terá uma IAM Role (`aws_iam_role`) com permissões específicas para iniciar um job do Glue.
 
 5.  **Glue (ETL e Catálogo de Dados):**
-    *   **Glue Job:** Um `aws_glue_job` será provisionado. O script (`src/glue_etl.py`) conterá a lógica para o **Requisito 5**.
-    *   **Glue Catalog:** Um banco de dados (`aws_glue_catalog_database`) será criado. O job do Glue será responsável por catalogar os dados refinados, conforme o **Requisito 7**.
-    *   O job terá uma IAM Role com permissões para ler de `raw/`, escrever em `refined/` e gerenciar o catálogo.
+    *   **Glue Job de Extração:** Um `aws_glue_job` para extrair os dados. O script (`src/glue_extractor_job.py`) conterá a lógica para os **Requisitos 1 e 2**.
+    *   **Glue Job de Transformação:** Um segundo `aws_glue_job` para transformar os dados. O script (`src/glue_transformer_job.py`) conterá a lógica para o **Requisito 5**.
+    *   **Glue Catalog:** Um banco de dados (`aws_glue_catalog_database`) será criado. O job de transformação será responsável por catalogar os dados refinados, conforme o **Requisito 7**.
+    *   Os jobs terão IAM Roles com permissões apropriadas.
 
 6.  **Scripts da Aplicação:**
-    *   `src/extractor_lambda_function.py`: Script Python para extrair os dados.
-    *   `src/glue_starter_lambda_function.py`: Script Python para iniciar o job do Glue.
-    *   `src/glue_etl.py`: Script PySpark para o Glue, contendo a lógica de ETL.
+    *   `src/glue_extractor_job.py`: Script PySpark para o job de extração do Glue.
+    *   `src/glue_transformer_job.py`: Script PySpark para o job de transformação do Glue.
+    *   `src/glue_starter_lambda_function.py`: Script Python para a função Lambda que aciona o job de transformação.
 
 ### Estrutura de Módulos Terraform Proposta
 
@@ -71,13 +70,11 @@ infra/
 ├── tf-backend/         # (Separado) Módulo para criar o bucket do .tfstate
 │   └── main.tf
 ├── eventbridge/
-│   └── main.tf         # Regra do EventBridge Scheduler
-├── lambda-extractor/
-│   └── main.tf         # Lambda de extração + IAM Role
+│   └── main.tf         # Regra do EventBridge Scheduler para acionar o Glue
 ├── lambda-glue-starter/
 │   └── main.tf         # Lambda de início do Glue + IAM Role + Gatilho S3
 ├── glue/
-│   └── main.tf         # Glue Job, Glue Database, IAM Role
+│   └── main.tf         # Glue Jobs (extração e transformação), Glue Database, IAM Roles
 └── s3/
     └── main.tf         # S3 Bucket para dados e scripts
 ```
@@ -90,8 +87,10 @@ infra/
 *   **Modularidade:** A separação de recursos facilita a manutenção.
 *   **Automação:** O pipeline é totalmente agendado e automatizado.
 *   **Estado Seguro:** O estado do Terraform é gerenciado de forma segura e remota.
+*   **Separação de Responsabilidades:** Jobs de extração e transformação são desacoplados, permitindo que sejam executados e mantidos de forma independente.
 
 ### Desvantagens
 *   **Complexidade Inicial:** A configuração do Terraform e dos módulos requer conhecimento da ferramenta.
-*   **Custos:** Os recursos da AWS incorrerão em custos.
-*   **Cold Start:** As funções Lambda podem ter um "cold start", mas isso não é crítico para um pipeline diário.
+*   **Custos:** Múltiplos jobs e uma função Lambda incorrerão em custos.
+*   **Maior Complexidade da Arquitetura:** O fluxo com dois jobs e uma função Lambda é mais complexo de orquestrar e depurar do que uma solução com um único job.
+*   **Gerenciamento de Dependências no Glue:** As bibliotecas Python (como `yfinance`) precisam ser corretamente configuradas no ambiente do job de extração.

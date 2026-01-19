@@ -1,54 +1,54 @@
-# GEMINI.md: AWS ETL Fiap
-
 ## Project Overview
 
-This project is a Python-based ETL (Extract, Transform, Load) pipeline designed to fetch financial market data and process it using AWS services. The primary goal is to extract stock data from an external source (Yahoo Finance), process it, and store it in a structured way on Amazon S3.
+This project implements a serverless ETL (Extract, Transform, Load) pipeline on AWS to process financial market data. It extracts daily stock data using `yfinance`, stores it in S3, transforms it with AWS Glue, and makes it available for querying via Amazon Athena. The entire infrastructure is defined as code using Terraform.
 
-The project appears to be an implementation of a larger set of requirements detailed in `requisitos.txt`, which outlines a more complex architecture involving AWS Glue, Lambda, and Athena. This current implementation focuses on the "Extract" part of the ETL process.
+The pipeline is orchestrated as follows:
 
-**Core Technologies:**
-*   **Python:** The language used for the ETL script.
-*   **yfinance:** A Python library for accessing financial data from Yahoo Finance.
-*   **Docker:** Used for containerizing the application for consistent execution.
-*   **AWS:** The target cloud platform. The `README.md` mentions EventBridge, Step Functions, and S3 as part of the intended architecture.
+1.  A daily scheduled EventBridge rule triggers an AWS Glue job to extract data.
+2.  The extraction job (`glue_extractor_job.py`) fetches data using `yfinance` and saves it as Parquet files in an S3 bucket under the `raw/` prefix.
+3.  The arrival of new data in the `raw/` directory triggers a Lambda function (`glue_starter_lambda_function.py`).
+4.  This Lambda function starts a second AWS Glue job (`glue_transformer_job.py`).
+5.  The transformation job enriches the data, performs calculations, and saves the results in the `refined/` prefix of the S3 bucket.
+6.  The AWS Glue Data Catalog is updated, allowing the transformed data to be queried using Amazon Athena.
 
 ## Building and Running
 
-The application is designed to be run as a Docker container, which is likely orchestrated by AWS services like Step Functions or AWS Batch in a production environment.
+### Prerequisites
 
-### Docker
+*   Docker
+*   Docker Compose
+*   An AWS account with credentials configured for Terraform
 
-**1. Build the Docker image:**
-```bash
-docker build -t aws-etl-fiap .
-```
+### Local Development
 
-**2. Run the Docker container:**
-```bash
-docker run aws-etl-fiap
-```
-This will execute the `etl.py` script and print the extracted stock data to the console.
+This project uses LocalStack to simulate AWS services locally.
 
-### Local Execution
+1.  **Start LocalStack:**
+    ```bash
+    docker-compose up
+    ```
+2.  **Run the ETL process:**
+    The `etl.py` script can be used for local testing.
+    ```bash
+    python src/etl.py
+    ```
+### AWS Deployment
 
-To run the script directly on your local machine, first install the dependencies:
+The infrastructure is deployed using Terraform.
 
-```bash
-pip install -r requirements.txt
-```
-
-Then, run the ETL script:
-
-```bash
-python etl.py
-```
-This will print the extracted stock data to the console.
-
+1.  **Initialize Terraform:**
+    ```bash
+    cd infra
+    terraform init
+    ```
+2.  **Apply Terraform:**
+    ```bash
+    terraform apply
+    ```
 ## Development Conventions
 
-*   The main logic is contained in `etl.py`.
-*   The core extraction logic is in the `extract_stock_data` function, which is a good practice for modularity and testing.
-*   A `if __name__ == "__main__":` block is used to provide a simple execution example when the script is run directly.
-*   Dependencies are managed in `requirements.txt`.
-*   The `Dockerfile` provides a clean, reproducible environment for the application, following good practices like using a non-root user.
-*   The `README.md` file provides a good overview of the project's architecture and purpose.
+*   **Infrastructure:** All infrastructure is managed as code using Terraform, with modules for each service (`s3`, `iam`, etc.).
+*   **ETL Scripts:** ETL logic is implemented in Python using PySpark for AWS Glue jobs.
+*   **Data Format:** Data is stored in Parquet format in S3, partitioned by date and ticker symbol.
+*   **Containerization:** The project includes a `Dockerfile` for containerizing the Python application and a `docker-compose.yml` file for running LocalStack.
+*   **Dependencies:** Python dependencies are managed in `requirements.txt`.

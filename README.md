@@ -1,91 +1,48 @@
 # AWS ETL Fiap
 
-Este projeto implementa um pipeline de ETL (Extração, Transformação e Carga) para dados do mercado financeiro, utilizando serviços da AWS. O objetivo é extrair dados de ações, processá-los e armazená-los no Amazon S3 de forma estruturada.
+Este projeto implementa um pipeline de ETL (Extração, Transformação e Carga) para dados do mercado financeiro, utilizando serviços da AWS. O objetivo é extrair dados de ações, processá-los e disponibilizá-los para consulta via SQL com o Amazon Athena.
 
-## Arquitetura
+Toda a infraestrutura é provisionada como código utilizando Terraform, conforme definido no documento de decisão de arquitetura [ADR-001](ADR-001-Pipeline-Terraform.md).
 
-A arquitetura utiliza os seguintes serviços da AWS:
+## Arquitetura do Pipeline
 
-- **EventBridge**: Utilizado para iniciar a execução agendada da máquina de estado do Step Functions, permitindo execuções periódicas do pipeline (ex: diariamente).
-- **AWS Step Functions**: Orquestra o fluxo de trabalho ETL, gerenciando a execução de cada etapa de forma coordenada e resiliente.
-- **Amazon S3 (Simple Storage Service)**: Armazena os dados em diferentes estágios do processo ETL.
+A arquitetura desacoplada utiliza múltiplos serviços da AWS para criar um pipeline robusto e escalável:
 
+1.  **Agendamento (EventBridge):** Um agendamento diário no Amazon EventBridge aciona o primeiro job do AWS Glue, iniciando o pipeline.
+2.  **Extração (AWS Glue):** O primeiro job (`glue_extractor_job.py`) é responsável por extrair dados de ações da internet (usando a biblioteca `yfinance`) e salvá-los em formato Parquet no bucket S3, dentro do prefixo `raw/`.
+3.  **Gatilho (S3 + Lambda):** A chegada de um novo arquivo em `raw/` aciona uma função AWS Lambda (`glue_starter_lambda_function.py`).
+4.  **Orquestração (Lambda):** A função Lambda atua como um orquestrador, iniciando a execução do segundo job do AWS Glue.
+5.  **Transformação (AWS Glue):** O segundo job (`glue_transformer_job.py`) lê os dados brutos de `raw/`, aplica as transformações de negócio necessárias e salva os dados enriquecidos no prefixo `refined/`.
+6.  **Catálogo de Dados (Glue Catalog):** Ao final do processo, o job de transformação atualiza o AWS Glue Data Catalog, tornando os dados disponíveis para consulta.
+7.  **Análise (Amazon Athena):** Os dados finais em `refined/` podem ser consultados diretamente via SQL utilizando o Amazon Athena.
 
 ### Estrutura do S3
 
 Os dados são organizados no S3 da seguinte maneira:
 
-- `s3://fiap-etl/raw/`: Armazena os dados brutos extraídos da fonte (Yahoo Finance).
-- `s3://fiap-etl/interim/`: Armazena os dados após a etapa de transformação.
-- `s3://fiap-etl/final/`: Armazena os dados finais, prontos para consumo por outras aplicações ou para análise.
+- `s3://<bucket-name>/raw/`: Armazena os dados brutos extraídos pela primeira etapa do pipeline, particionados por data.
+- `s3://<bucket-name>/refined/`: Armazena os dados processados e enriquecidos, prontos para análise, também particionados.
+- `s3://<bucket-name>/scripts/`: Armazena os scripts Python e PySpark utilizados pelos jobs do Glue e pela função Lambda.
 
-## Execução
+## Scripts do Projeto
 
-O coração do ETL é o script `etl.py`, que é executado em um ambiente containerizado com Docker. A imagem Docker é construída a partir do `Dockerfile` no projeto.
+-   `src/glue_extractor_job.py`: Script PySpark para o job de extração do Glue.
+-   `src/glue_transformer_job.py`: Script PySpark para o job de transformação do Glue.
+-   `src/glue_starter_lambda_function.py`: Script Python para a função Lambda que aciona o job de transformação.
 
-O AWS Step Functions é configurado para executar este container como uma tarefa, passando os parâmetros necessários para a execução do script.
+## Infraestrutura como Código (Terraform)
 
-### Script `etl.py`
+A infraestrutura é definida em módulos do Terraform, localizados no diretório `infra/`. A estrutura modular inclui:
 
-Este script utiliza a biblioteca `yfinance` para extrair dados históricos de ações. Atualmente, está configurado para extrair dados do ticker `ITUB4.SA`.
+-   `eventbridge/`: Define o agendamento do pipeline.
+-   `lambda-glue-starter/`: Define a função Lambda e seu gatilho S3.
+-   `glue/`: Define os dois jobs do Glue, o Data Catalog e as permissões necessárias.
+-   `s3/`: Define o bucket S3 para armazenamento dos dados.
 
-## Desenvolvimento Local com LocalStack
-
-É possível executar e testar a configuração do Terraform localmente utilizando o [LocalStack](https://localstack.cloud/). A conexão entre o Terraform e o LocalStack é configurada no arquivo `infra/iam/providers.tf`, que aponta o provedor AWS para os endpoints do LocalStack (ex: `http://localhost:4566`).
-
-### Iniciando o LocalStack com Docker Compose
-
-Para facilitar a execução do LocalStack, você pode usar o arquivo `docker-compose.yml` na raiz do projeto.
-
-1.  Inicie o LocalStack em modo detached:
-    ```bash
-    docker-compose up -d
-    ```
-
-2.  Para parar o LocalStack:
-    ```bash
-    docker-compose down
-    ```
-
-### Pré-requisitos
-
--   [Terraform](https://learn.hashicorp.com/tutorials/terraform/install-cli) instalado.
--   [LocalStack](https://docs.localstack.cloud/getting-started/installation/) instalado e em execução (via Docker Compose ou outro método).
--   [AWS CLI](https://aws.amazon.com/cli/) instalado.
-
-### Executando o Terraform
-
-1.  Navegue até o diretório `infra/iam`:
-    ```bash
-    cd infra/iam
-    ```
-
-2.  Inicialize o Terraform:
-    ```bash
-    terraform init
-    ```
-
-3.  Aplique a configuração do Terraform:
-    ```bash
-    terraform apply
-    ```
-
-Isso irá criar os recursos da AWS (no ambiente LocalStack) definidos nos arquivos `.tf`.
-
-### Verificando os recursos
-
-Após aplicar a configuração do Terraform, você pode verificar se os recursos foram criados corretamente no LocalStack usando o AWS CLI.
-
-Por exemplo, para verificar se o "role" do IAM foi criado:
-```bash
-aws --endpoint-url=http://localhost:4566 iam get-role --role-name fiap-etl-role
-```
-
-Se o comando retornar um JSON com os detalhes do "role", a conexão e a criação dos recursos foram bem-sucedidas.
+Consulte a [ADR-001](ADR-001-Pipeline-Terraform.md) para mais detalhes sobre as decisões de implementação do Terraform.
 
 ## Dependências
 
 As dependências Python do projeto estão listadas no arquivo `requirements.txt`:
 
 - `yfinance`: Para extração de dados do Yahoo Finance.
- 
