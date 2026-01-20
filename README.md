@@ -18,7 +18,7 @@ Este projeto implementa um pipeline de ETL (Extração, Transformação e Carga)
 
 ## Arquitetura do Pipeline
 
-![Diagrama de Arquitetura](docs/arquiteutra.png) Diagrama de arquiteura
+![Diagrama de Arquitetura](docs/arquitetura.png) Diagrama de arquitetura
 
 
 A arquitetura desacoplada utiliza múltiplos serviços da AWS para criar um pipeline robusto e escalável:
